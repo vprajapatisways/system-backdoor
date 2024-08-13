@@ -3,7 +3,7 @@ import sys
 
 def install_packages():
     # List of required packages
-    packages = ["pyautogui", "pynput"]
+    packages = ["pyautogui", "pynput" ,"Pillow"]
 
     # Install each package
     for package in packages:

